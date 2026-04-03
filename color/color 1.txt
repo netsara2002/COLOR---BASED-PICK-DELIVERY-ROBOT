@@ -1,0 +1,96 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// I2C LCD
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // LCD address may be 0x27 or 0x3F
+
+// TCS230 pins
+#define S0 23
+#define S1 22
+#define S2 21
+#define S3 19
+#define OUT 35
+
+// Variables to store pulse counts
+volatile unsigned int pulseCount = 0;
+
+// Setup frequency scaling (S0,S1)
+#define SCALE_LOW  LOW, LOW
+#define SCALE_MED  HIGH, LOW
+#define SCALE_HIGH LOW, HIGH
+#define SCALE_MAX  HIGH, HIGH
+
+void IRAM_ATTR countPulse() {
+  pulseCount++;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // TCS230 pins
+  pinMode(S0, OUTPUT);
+  pinMode(S1, OUTPUT);
+  pinMode(S2, OUTPUT);
+  pinMode(S3, OUTPUT);
+  pinMode(OUT, INPUT);
+
+  // Frequency scaling: 100% (S0 HIGH, S1 HIGH)
+  digitalWrite(S0, HIGH);
+  digitalWrite(S1, HIGH);
+
+  // Attach interrupt to OUT pin
+  attachInterrupt(digitalPinToInterrupt(OUT), countPulse, RISING);
+
+  // LCD setup
+  Wire.begin(17, 16); // SDA, SCL
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("Color Sensor");
+  delay(1000);
+  lcd.clear();
+}
+
+unsigned int readColor(int s2State, int s3State) {
+  // Select color filter
+  digitalWrite(S2, s2State);
+  digitalWrite(S3, s3State);
+
+  pulseCount = 0;
+  // Count pulses for 100 ms
+  delay(100);
+  return pulseCount;
+}
+
+void loop() {
+  // Read colors
+  unsigned int redFreq   = readColor(LOW, LOW);
+  unsigned int blueFreq  = readColor(LOW, HIGH);
+  unsigned int greenFreq = readColor(HIGH, HIGH);
+
+  Serial.print("R = "); Serial.print(redFreq);
+  Serial.print("  G = "); Serial.print(greenFreq);
+  Serial.print("  B = "); Serial.println(blueFreq);
+
+  // Detect color (adjust thresholds for your setup)
+  String colorName = "UNKNOWN";
+  if (redFreq > greenFreq && redFreq > blueFreq) colorName = "RED";
+  else if (greenFreq > redFreq && greenFreq > blueFreq) colorName = "GREEN";
+  else if (blueFreq > redFreq && blueFreq > greenFreq) colorName = "BLUE";
+  else colorName = "WHITE or LIGHT";
+
+  // Display on LCD
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("R:");
+  lcd.print(redFreq);
+  lcd.print(" G:");
+  lcd.print(greenFreq);
+  lcd.setCursor(0,1);
+  lcd.print("B:");
+  lcd.print(blueFreq);
+  lcd.print(" ");
+  lcd.print(colorName);
+
+  delay(500);
+}

@@ -1,0 +1,138 @@
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
+
+// ==========================================
+//        1. PIN MAPPING (SAFE MODE)
+// ==========================================
+
+// --- LCD ---
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Change to 0x3F if screen is blank
+
+// --- SENSORS (Safe Pins) ---
+const int s1 = 36;  // Leftmost
+const int s2 = 39;  // Left
+const int s3 = 34;  // Center
+const int s4 = 35;  // Right
+const int s5 = 32;  // Rightmost
+
+// --- MOTORS (L298N) ---
+// Left Motor
+const int lmb = 12;  // IN1 (Backward)
+const int lmf = 14;  // IN2 (Forward)
+const int lms = 13;  // PWM (Speed)
+
+// Right Motor (Fixed for your wiring)
+const int rmb = 26;  // IN4 (Forward)
+const int rmf = 27;  // IN3 (Backward)
+const int rms = 25;  // PWM (Speed)
+
+// ==========================================
+//        2. SETTINGS
+// ==========================================
+int baseSpeed = 99;      
+int turningSpeed = 180;  
+
+// Memory Variables
+unsigned long memoryDuration = 450; 
+unsigned long lastDetectTime = 0;
+String lastDirection = "straight";
+unsigned long lostLineTime = 0;
+bool turningToRecover = false;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize Pins
+  pinMode(s1, INPUT); pinMode(s2, INPUT); pinMode(s3, INPUT);
+  pinMode(s4, INPUT); pinMode(s5, INPUT);
+  
+  pinMode(lmb, OUTPUT); pinMode(lmf, OUTPUT); pinMode(lms, OUTPUT);
+  pinMode(rmb, OUTPUT); pinMode(rmf, OUTPUT); pinMode(rms, OUTPUT);
+  
+  // Initialize LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0); lcd.print("Line Follower");
+  lcd.setCursor(0,1); lcd.print("Running...");
+}
+
+void loop() {
+  // Read Sensors (0 = Black, 1 = White)
+  int ir1 = digitalRead(s1);
+  int ir2 = digitalRead(s2);
+  int ir3 = digitalRead(s3);
+  int ir4 = digitalRead(s4);
+  int ir5 = digitalRead(s5);
+
+  // Check if line is completely lost (All White = 1)
+  bool allWhite = (ir1==1) && (ir2==1) && (ir3==1) && (ir4==1) && (ir5==1);
+
+  // --- MEMORY UPDATE ---
+  // If Left side sees Black (0)
+  if (ir1==0 || ir2==0) { lastDirection = "left"; lastDetectTime = millis(); } 
+  // If Right side sees Black (0)
+  else if (ir4==0 || ir5==0) { lastDirection = "right"; lastDetectTime = millis(); }
+
+  // --- RECOVERY LOGIC (If Line Lost) ---
+  if (allWhite) {
+    if (millis() - lastDetectTime < memoryDuration) {
+      if (!turningToRecover) { turningToRecover = true; lostLineTime = millis(); }
+      
+      // Turn in the direction we last saw the line
+      if (lastDirection == "left") { leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); } 
+      else if (lastDirection == "right") { leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); } 
+      else { stopMotors(); }
+      return;
+    } else {
+      stopMotors(); // Lost too long, stop
+      return;
+    }
+  }
+  turningToRecover = false;
+
+  // --- MOVEMENT LOGIC (0 = Black) ---
+  
+  // Sharp Left
+  if (ir1==0 && ir2==0 && ir3==0 && ir4==1 && ir5==1) { 
+    leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); lastDirection = "left"; delay(100);
+  }
+  // Sharp Right
+  else if (ir1==1 && ir2==1 && ir3==0 && ir4==0 && ir5==0) { 
+    leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); lastDirection = "right"; delay(100);
+  }
+  // Center Forward
+  else if (ir3==0 && ir1==1 && ir2==1 && ir4==1 && ir5==1) { 
+    leftMotorForward(baseSpeed); rightMotorForward(baseSpeed); lastDirection = "straight";
+  }
+  // Slight Lefts
+  else if (ir1==0 && ir2==1 && ir3==1 && ir4==1 && ir5==1) { // Far Left
+    leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); lastDirection = "left";
+  }
+  else if (ir1==1 && ir2==0 && ir3==1 && ir4==1 && ir5==1) { // Mid Left
+    leftMotorStop(); rightMotorForward(turningSpeed); lastDirection = "left";
+  }
+  // Slight Rights
+  else if (ir1==1 && ir2==1 && ir3==1 && ir4==0 && ir5==1) { // Mid Right
+    leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); lastDirection = "right";
+  }
+  else if (ir1==1 && ir2==1 && ir3==1 && ir4==1 && ir5==0) { // Far Right
+    leftMotorForward(turningSpeed); rightMotorStop(); lastDirection = "right";
+  }
+  else {
+    // Default Forward (Slowly)
+    leftMotorForward(baseSpeed - 40); rightMotorForward(baseSpeed - 40);
+  }
+}
+
+// ==========================================
+//           MOTOR HELPERS
+// ==========================================
+void leftMotorForward(int speed) { digitalWrite(lmf, LOW); digitalWrite(lmb, HIGH); analogWrite(lms, speed); }
+void leftMotorBackward(int speed) { digitalWrite(lmf, HIGH); digitalWrite(lmb, LOW); analogWrite(lms, speed); }
+void leftMotorStop() { digitalWrite(lmf, LOW); digitalWrite(lmb, LOW); analogWrite(lms, 0); }
+
+void rightMotorForward(int speed) { digitalWrite(rmf, LOW); digitalWrite(rmb, HIGH); analogWrite(rms, speed); }
+void rightMotorBackward(int speed) { digitalWrite(rmf, HIGH); digitalWrite(rmb, LOW); analogWrite(rms, speed); }
+void rightMotorStop() { digitalWrite(rmf, LOW); digitalWrite(rmb, LOW); analogWrite(rms, 0); }
+
+void stopMotors() { leftMotorStop(); rightMotorStop(); }

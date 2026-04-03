@@ -1,0 +1,91 @@
+// --- PIN DEFINITIONS ---
+// Motor A (Left)
+const int IN1 = 26;
+const int IN2 = 33;
+const int ENA = 14; // Speed Control Pin
+
+// Motor B (Right)
+const int IN3 = 27;
+const int IN4 = 25;
+const int ENB = 32; // Speed Control Pin
+
+// --- SPEED SETTINGS ---
+// Change this to adjust speed (0-255)
+int motorSpeed = 200; 
+
+// --- PWM PROPERTIES ---
+const int freq = 30000;
+const int resolution = 8;
+
+void setup() {
+  // Set direction pins as outputs
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  // --- NEW PWM SETUP (ESP32 Core 3.0+) ---
+  // We attach the pin directly with frequency and resolution
+  ledcAttach(ENA, freq, resolution);
+  ledcAttach(ENB, freq, resolution);
+  
+  Serial.begin(115200);
+  Serial.println("Sequence Started");
+}
+
+void loop() {
+  // --- 1. MOVE FORWARD (5 Seconds) ---
+  Serial.println("Moving Forward");
+  moveForward();
+  delay(5000); 
+
+  // Stop briefly
+  stopMotors();
+  delay(500);
+
+  // --- 2. MOVE BACKWARD (5 Seconds) ---
+  Serial.println("Moving Backward");
+  moveBackward();
+  delay(5000);
+
+  // Stop before restarting
+  stopMotors();
+  delay(500);
+}
+
+// --- HELPER FUNCTIONS ---
+
+void moveForward() {
+  // Motor A Forward
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  // In new version, we write directly to the pin, not the channel
+  ledcWrite(ENA, motorSpeed); 
+
+  // Motor B Forward
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  ledcWrite(ENB, motorSpeed);
+}
+
+void moveBackward() {
+  // Motor A Backward
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  ledcWrite(ENA, motorSpeed); 
+
+  // Motor B Backward
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+  ledcWrite(ENB, motorSpeed);
+}
+
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  ledcWrite(ENA, 0);
+
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  ledcWrite(ENB, 0);
+}

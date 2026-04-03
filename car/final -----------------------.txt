@@ -1,0 +1,338 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ==========================================
+// PIN MAPPING (ESP32 SAFE MODE)
+// ==========================================
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Ultrasonic Sensor
+const int trigPin = 2;
+const int echoPin = 15;
+
+// IR Sensors (0 = BLACK)
+const int s1 = 36;
+const int s2 = 39;
+const int s3 = 34;
+const int s4 = 35;
+const int s5 = 32;
+
+// Motors (L298N)
+const int lmb = 12, lmf = 14, lms = 13;
+const int rmb = 26, rmf = 27, rms = 25;
+
+// Color Sensor
+const int color_s2 = 4;
+const int color_s3 = 5;
+const int color_out = 18;
+
+// ==========================================
+// SETTINGS
+// ==========================================
+int baseSpeed = 79;       // Speed for straight line
+int turningSpeed = 180;    // Speed for turns
+int spinStepSpeed = 190;   // Speed for the Step-by-Step Spin
+
+// Memory & Recovery
+unsigned long lastDetectTime = 0;
+unsigned long memoryDuration = 10;
+String lastDirection = "straight";
+bool turningToRecover = false;
+
+// Mission Variables
+// 0=Wait/Load/Spin, 1=Outbound Line, 2=Outbound Turn, 3=Unload/Spin, 4=Return Line, 5=Home Turn
+int missionPhase = 0;   
+String targetColor = "NONE";
+bool junctionLock = false;
+
+// ==========================================
+// SETUP
+// ==========================================
+void setup() {
+  Serial.begin(115200);
+
+  // Init Pins
+  pinMode(trigPin, OUTPUT); pinMode(echoPin, INPUT);
+  pinMode(s1, INPUT); pinMode(s2, INPUT); pinMode(s3, INPUT);
+  pinMode(s4, INPUT); pinMode(s5, INPUT);
+  pinMode(lmb, OUTPUT); pinMode(lmf, OUTPUT); pinMode(lms, OUTPUT);
+  pinMode(rmb, OUTPUT); pinMode(rmf, OUTPUT); pinMode(rms, OUTPUT);
+  pinMode(color_s2, OUTPUT); pinMode(color_s3, OUTPUT); pinMode(color_out, INPUT);
+
+  // Init LCD
+  lcd.init();
+  lcd.backlight();
+  
+  // Just show welcome message, Logic is in loop()
+  lcd.setCursor(0, 0); lcd.print("SYSTEM READY");
+  delay(1000);
+}
+
+// ==========================================
+// MAIN LOOP (THE INFINITE CYCLE)
+// ==========================================
+void loop() {
+
+  // -------- PHASE 0: WAIT -> LOAD -> SPIN --------
+  if (missionPhase == 0) {
+    stopMotors();
+    
+    // 1. Wait for Object
+    lcd.clear(); lcd.setCursor(0, 0); lcd.print("Waiting Load...");
+    lcd.setCursor(0, 1); lcd.print("Dist < 9cm");
+    
+    while (getDistance() >= 9) {
+      delay(100); // Check every 100ms
+    }
+
+    // 2. Object Detected -> Scan
+    lcd.clear(); lcd.print("Object Loaded!");
+    delay(1000); 
+
+    targetColor = detectColor();
+    lcd.clear(); lcd.print("Target: "); lcd.print(targetColor);
+    lcd.setCursor(0,1);
+    if (targetColor == "RED") lcd.print("-> LEFT");
+    else if (targetColor == "GREEN") lcd.print("-> RIGHT");
+    else lcd.print("-> STRAIGHT");
+    delay(2000);
+
+    // 3. Spin 180 to find the line
+    lcd.clear(); lcd.print("Finding Line...");
+    executeStepSpinLoop(); 
+    stopMotors();
+    delay(500);
+
+    // 4. Start Mission
+    lcd.clear(); lcd.print("GO!");
+    missionPhase = 1; 
+    junctionLock = false;
+  }
+
+  // -------- PHASE 1: OUTBOUND LINE FOLLOW --------
+  else if (missionPhase == 1) {
+    int ir1 = digitalRead(s1); int ir2 = digitalRead(s2); int ir3 = digitalRead(s3);
+    int ir4 = digitalRead(s4); int ir5 = digitalRead(s5);
+
+    // Detect Outbound Junction
+    if (!junctionLock && ir1==0 && ir2==0 && ir3==0 && ir4==0 && ir5==0) {
+      stopMotors();
+      delay(200);
+      junctionLock = true;
+      missionPhase = 2; // Go to Turn
+      return;
+    }
+    runLineFollower(); 
+  }
+
+  // -------- PHASE 2: OUTBOUND TURN --------
+  else if (missionPhase == 2) {
+    executeOutboundTurn(); 
+    missionPhase = 3; // Go to Destination
+  }
+
+  // -------- PHASE 3: ARRIVE -> UNLOAD -> SPIN --------
+  else if (missionPhase == 3) {
+    
+    // 1. Enter Zone (600ms)
+    lcd.clear(); lcd.print("Entering Zone");
+    unsigned long startTime = millis();
+    while (millis() - startTime < 3000) { 
+       runLineFollower(); 
+    }
+    stopMotors();
+
+    // 2. Wait for Unload (Dist < 9)
+    lcd.clear(); lcd.print("Unload Object!");
+    while (getDistance() < 9) {
+      stopMotors();
+      delay(100);
+    }
+
+    // 3. Unloaded -> Wait 2s
+    lcd.clear(); lcd.print("Wait 2s...");
+    delay(4000);
+
+    // 4. Spin to Return
+    lcd.clear(); lcd.print("Step Spin...");
+    executeStepSpinLoop();
+
+    // 5. Switch to Return Phase
+    missionPhase = 4;
+    junctionLock = false; // Reset lock for return junction
+    lcd.clear(); lcd.print("Returning...");
+  }
+
+  // -------- PHASE 4: RETURN LINE FOLLOW --------
+  else if (missionPhase == 4) {
+    int ir1 = digitalRead(s1); int ir2 = digitalRead(s2); int ir3 = digitalRead(s3);
+    int ir4 = digitalRead(s4); int ir5 = digitalRead(s5);
+
+    // Check for Junction AND No Object
+    if (!junctionLock && ir1==0 && ir2==0 && ir3==0 && ir4==0 && ir5==0) {
+       if (getDistance() >= 9) { 
+          stopMotors();
+          delay(200);
+          missionPhase = 5; // Go to Home Turn
+          return;
+       }
+    }
+    runLineFollower();
+  }
+
+  // -------- PHASE 5: HOME TURN & RESET --------
+  else if (missionPhase == 5) {
+     executeHomeTurn(); // Inverted Logic
+     
+     // Park
+     lcd.clear(); lcd.print("Parking...");
+     unsigned long pTime = millis();
+     while (millis() - pTime < 3000) {
+        runLineFollower();
+     }
+     
+     stopMotors();
+     lcd.clear(); lcd.print("Home Reached");
+     delay(2000); // Wait briefly before restarting
+     
+     // *** RESTART THE LOOP ***
+     missionPhase = 0; 
+     junctionLock = false;
+     targetColor = "NONE";
+  }
+}
+
+// ==========================================
+// SPIN LOGIC (USED TWICE)
+// ==========================================
+void executeStepSpinLoop() {
+  while (true) {
+    // Step 1: Right Fwd
+    digitalWrite(lmb, LOW); digitalWrite(lmf, LOW); analogWrite(lms, 0); 
+    digitalWrite(rmf, LOW); digitalWrite(rmb, HIGH); analogWrite(rms, spinStepSpeed); 
+    if (waitForLineOrTimeout(300)) return; 
+    stopMotors(); if (waitForLineOrTimeout(500)) return;
+
+    // Step 2: Left Bwd
+    digitalWrite(rmf, LOW); digitalWrite(rmb, LOW); analogWrite(rms, 0); 
+    digitalWrite(lmf, HIGH); digitalWrite(lmb, LOW); analogWrite(lms, spinStepSpeed); 
+    if (waitForLineOrTimeout(300)) return;
+    stopMotors(); if (waitForLineOrTimeout(500)) return;
+  }
+}
+
+bool waitForLineOrTimeout(int duration) {
+  unsigned long start = millis();
+  while (millis() - start < duration) {
+    if (digitalRead(s3) == 0) { // Found Line
+      stopMotors();
+      return true; 
+    }
+  }
+  return false; 
+}
+
+// ==========================================
+// TURN FUNCTIONS
+// ==========================================
+void executeHomeTurn() {
+  lcd.clear(); lcd.print("Home Junction");
+  if (targetColor == "RED") {
+    leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); // Turn Right
+    delay(500); 
+    while(digitalRead(s3) == 1); 
+  }
+  else if (targetColor == "GREEN") {
+    leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); // Turn Left
+    delay(500); 
+    while(digitalRead(s3) == 1); 
+  }
+  else {
+    leftMotorForward(baseSpeed); rightMotorForward(baseSpeed);
+    delay(300);
+  }
+  stopMotors();
+}
+
+void executeOutboundTurn() {
+  if (targetColor == "RED") {
+    lcd.clear(); lcd.print("TURN LEFT");
+    leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed);
+    delay(500); 
+  }
+  else if (targetColor == "GREEN") {
+    lcd.clear(); lcd.print("TURN RIGHT");
+    leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed);
+    delay(500); 
+  }
+  else {
+    leftMotorForward(baseSpeed); rightMotorForward(baseSpeed);
+    delay(300);
+    return;
+  }
+  unsigned long t0 = millis();
+  while (millis() - t0 < 1500) {
+    if (digitalRead(s3) == 0) break;
+    if (targetColor == "RED") { leftMotorBackward(160); rightMotorForward(160); } 
+    else { leftMotorForward(160); rightMotorBackward(160); }
+  }
+  stopMotors();
+}
+
+// ==========================================
+// SENSORS & MOTORS
+// ==========================================
+int getDistance() {
+  digitalWrite(trigPin, LOW); delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH); delayMicroseconds(10); digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000); 
+  if (duration == 0) return 999; 
+  return duration * 0.034 / 2;
+}
+
+String detectColor() {
+  digitalWrite(color_s2, LOW); digitalWrite(color_s3, LOW); int r = pulseIn(color_out, LOW, 30000);
+  digitalWrite(color_s2, HIGH); digitalWrite(color_s3, HIGH); int g = pulseIn(color_out, LOW, 30000);
+  digitalWrite(color_s2, LOW); digitalWrite(color_s3, HIGH); int b = pulseIn(color_out, LOW, 30000);
+  
+  if (r > 250 || g > 250 || b > 250) return "NONE"; 
+  if (r < g && r < b && r < 1000) return "RED";
+  if (g < r && g < b && g < 1000) return "GREEN";
+  if (b < r && b < g) return "BLUE";
+  
+  return "UNKNOWN"; 
+}
+
+void runLineFollower() {
+  int ir1 = digitalRead(s1); int ir2 = digitalRead(s2); int ir3 = digitalRead(s3);
+  int ir4 = digitalRead(s4); int ir5 = digitalRead(s5);
+  bool allWhite = (ir1==1 && ir2==1 && ir3==1 && ir4==1 && ir5==1);
+
+  if (ir1==0 || ir2==0) { lastDirection = "left"; lastDetectTime = millis(); } 
+  else if (ir4==0 || ir5==0) { lastDirection = "right"; lastDetectTime = millis(); }
+
+  if (allWhite) {
+    if (millis() - lastDetectTime < memoryDuration) {
+      if (!turningToRecover) { turningToRecover = true; }
+      if (lastDirection == "left") { leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); } 
+      else { leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); }
+      return;
+    } else { stopMotors(); return; }
+  }
+  turningToRecover = false;
+
+  if (ir1==0 && ir2==0 && ir3==0 && ir4==1 && ir5==1) { leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); lastDirection = "left"; delay(50); }
+  else if (ir1==1 && ir2==1 && ir3==0 && ir4==0 && ir5==0) { leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); lastDirection = "right"; delay(50); }
+  else if (ir3==0) { leftMotorForward(baseSpeed); rightMotorForward(baseSpeed); lastDirection = "straight"; }
+  else if (ir1==0 || ir2==0) { leftMotorBackward(turningSpeed); rightMotorForward(turningSpeed); lastDirection = "left"; }
+  else if (ir4==0 || ir5==0) { leftMotorForward(turningSpeed); rightMotorBackward(turningSpeed); lastDirection = "right"; }
+  else { leftMotorForward(baseSpeed - 30); rightMotorForward(baseSpeed - 30); }
+}
+
+void leftMotorForward(int s) { digitalWrite(lmf, LOW); digitalWrite(lmb, HIGH); analogWrite(lms, s); }
+void leftMotorBackward(int s){ digitalWrite(lmf, HIGH); digitalWrite(lmb, LOW); analogWrite(lms, s); }
+void leftMotorStop()         { digitalWrite(lmf, LOW); digitalWrite(lmb, LOW); analogWrite(lms, 0); }
+void rightMotorForward(int s){ digitalWrite(rmf, LOW); digitalWrite(rmb, HIGH); analogWrite(rms, s); }
+void rightMotorBackward(int s){ digitalWrite(rmf, HIGH); digitalWrite(rmb, LOW); analogWrite(rms, s); }
+void rightMotorStop()        { digitalWrite(rmf, LOW); digitalWrite(rmb, LOW); analogWrite(rms, 0); }
+void stopMotors() { leftMotorStop(); rightMotorStop(); }

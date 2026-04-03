@@ -1,0 +1,3 @@
+Left Motor Forward: IN1 = HIGH, IN2 = LOW
+
+Right Motor Forward: IN3 = LOW, IN4 = HIGH

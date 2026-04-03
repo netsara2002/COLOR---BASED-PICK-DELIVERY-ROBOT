@@ -1,0 +1,8 @@
+IR Sensor Pin,ESP32 Pin,Description
+VCC,3.3V or 5V,"Check your sensor specs (most work on 3.3V, but 5V is brighter)"
+GND,GND,Common Ground
+OUT 1 (Left Most),GPIO 13,Left Sensor
+OUT 2,GPIO 12,Left-Center Sensor
+OUT 3 (Middle),GPIO 18,Center Sensor
+OUT 4,GPIO 19,Right-Center Sensor
+OUT 5 (Right Most),GPIO 21,Right Sensor

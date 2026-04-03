@@ -1,0 +1,259 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ==========================================
+// PIN MAPPING
+// ==========================================
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// IR sensors (0 = BLACK)
+const int s1 = 36;
+const int s2 = 39;
+const int s3 = 34;
+const int s4 = 35;
+const int s5 = 32;
+
+// Motors (L298N)
+const int lmb = 12, lmf = 14, lms = 13;
+const int rmb = 26, rmf = 27, rms = 25;
+
+// Color sensor
+const int color_s2 = 4;
+const int color_s3 = 5;
+const int color_out = 18;
+
+// ==========================================
+// SETTINGS
+// ==========================================
+int baseSpeed = 120;
+int turningSpeed = 230;
+
+// Memory
+unsigned long lastDetectTime = 0;
+unsigned long memoryDuration = 400;
+String lastDirection = "straight";
+
+// Mission
+int missionPhase = 1;   // 1=line, 2=turn, 3=post-run
+String targetColor = "NONE";
+bool junctionLock = false;
+
+// ==========================================
+// SETUP
+// ==========================================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(s1, INPUT); pinMode(s2, INPUT); pinMode(s3, INPUT);
+  pinMode(s4, INPUT); pinMode(s5, INPUT);
+
+  pinMode(lmb, OUTPUT); pinMode(lmf, OUTPUT); pinMode(lms, OUTPUT);
+  pinMode(rmb, OUTPUT); pinMode(rmf, OUTPUT); pinMode(rms, OUTPUT);
+
+  pinMode(color_s2, OUTPUT);
+  pinMode(color_s3, OUTPUT);
+  pinMode(color_out, INPUT);
+
+  lcd.init();
+  lcd.backlight();
+
+  lcd.print("Ready...");
+  delay(1500);
+
+  lcd.clear();
+  lcd.print("Scanning...");
+  targetColor = detectColor();
+
+  lcd.clear();
+  lcd.print("Target:");
+  lcd.print(targetColor);
+  lcd.setCursor(0,1);
+  if (targetColor == "RED") lcd.print("LEFT");
+  else if (targetColor == "GREEN") lcd.print("RIGHT");
+  else lcd.print("STRAIGHT");
+
+  delay(1500);
+  lcd.clear();
+  lcd.print("START");
+}
+
+// ==========================================
+// LOOP
+// ==========================================
+void loop() {
+
+  // -------- PHASE 1: LINE FOLLOW --------
+  if (missionPhase == 1) {
+
+    int ir1 = digitalRead(s1);
+    int ir2 = digitalRead(s2);
+    int ir3 = digitalRead(s3);
+    int ir4 = digitalRead(s4);
+    int ir5 = digitalRead(s5);
+
+    // Junction detection
+    if (!junctionLock &&
+        ir1==0 && ir2==0 && ir3==0 && ir4==0 && ir5==0) {
+
+      stopMotors();
+      delay(200);
+      junctionLock = true;
+      missionPhase = 2;
+      return;
+    }
+
+    runLineFollower();
+  }
+
+  // -------- PHASE 2: TURN --------
+  else if (missionPhase == 2) {
+    executeTurn();
+    missionPhase = 3;
+  }
+
+  // -------- PHASE 3: RUN 2 SECONDS & STOP --------
+  else if (missionPhase == 3) {
+
+    lcd.clear();
+    lcd.print("Final 2 sec");
+
+    leftMotorForward(baseSpeed);
+    rightMotorForward(baseSpeed);
+    delay(400);          // <<< 2 SECONDS RUN
+
+    stopMotors();
+    lcd.clear();
+    lcd.print("STOPPED");
+
+    while (true);         // END MISSION
+  }
+}
+
+// ==========================================
+// TURN LOGIC (TURN ON JUNCTION)
+// ==========================================
+void executeTurn() {
+
+  if (targetColor == "RED") {
+    lcd.clear();
+    lcd.print("TURN LEFT");
+
+    leftMotorBackward(turningSpeed);
+    rightMotorForward(turningSpeed);
+    delay(520);
+  }
+  else if (targetColor == "GREEN") {
+    lcd.clear();
+    lcd.print("TURN RIGHT");
+
+    leftMotorForward(turningSpeed);
+    rightMotorBackward(turningSpeed);
+    delay(520);
+  }
+  else {
+    leftMotorForward(baseSpeed);
+    rightMotorForward(baseSpeed);
+    delay(300);
+    return;
+  }
+
+  // Search for new line briefly
+  unsigned long t0 = millis();
+  while (millis() - t0 < 1200) {
+    if (digitalRead(s3) == 0) break;
+
+    if (targetColor == "RED") {
+      leftMotorBackward(160);
+      rightMotorForward(160);
+    } else {
+      leftMotorForward(160);
+      rightMotorBackward(160);
+    }
+  }
+
+  stopMotors();
+}
+
+// ==========================================
+// LINE FOLLOWER
+// ==========================================
+void runLineFollower() {
+
+  int ir1 = digitalRead(s1);
+  int ir2 = digitalRead(s2);
+  int ir3 = digitalRead(s3);
+  int ir4 = digitalRead(s4);
+  int ir5 = digitalRead(s5);
+
+  bool allWhite = (ir1 && ir2 && ir3 && ir4 && ir5);
+
+  if (ir1==0 || ir2==0) { lastDirection="left"; lastDetectTime=millis(); }
+  else if (ir4==0 || ir5==0) { lastDirection="right"; lastDetectTime=millis(); }
+
+  if (allWhite) {
+    if (millis() - lastDetectTime < memoryDuration) {
+      if (lastDirection == "left") {
+        leftMotorBackward(turningSpeed);
+        rightMotorForward(turningSpeed);
+      } else {
+        leftMotorForward(turningSpeed);
+        rightMotorBackward(turningSpeed);
+      }
+      return;
+    } else {
+      stopMotors();
+      return;
+    }
+  }
+
+  if (ir3==0) {
+    leftMotorForward(baseSpeed);
+    rightMotorForward(baseSpeed);
+  }
+  else if (ir1==0 || ir2==0) {
+    leftMotorBackward(turningSpeed);
+    rightMotorForward(turningSpeed);
+  }
+  else if (ir4==0 || ir5==0) {
+    leftMotorForward(turningSpeed);
+    rightMotorBackward(turningSpeed);
+  }
+  else {
+    leftMotorForward(baseSpeed - 40);
+    rightMotorForward(baseSpeed - 40);
+  }
+}
+
+// ==========================================
+// COLOR SENSOR
+// ==========================================
+String detectColor() {
+  digitalWrite(color_s2, LOW); digitalWrite(color_s3, LOW);
+  int r = pulseIn(color_out, LOW, 25000);
+
+  digitalWrite(color_s2, HIGH); digitalWrite(color_s3, HIGH);
+  int g = pulseIn(color_out, LOW, 25000);
+
+  digitalWrite(color_s2, LOW); digitalWrite(color_s3, HIGH);
+  int b = pulseIn(color_out, LOW, 25000);
+
+  if (r < g && r < b) return "RED";
+  if (g < r && g < b) return "GREEN";
+  return "BLUE";
+}
+
+// ==========================================
+// MOTOR CONTROL
+// ==========================================
+void leftMotorForward(int s) { digitalWrite(lmf, LOW); digitalWrite(lmb, HIGH); analogWrite(lms, s); }
+void leftMotorBackward(int s){ digitalWrite(lmf, HIGH); digitalWrite(lmb, LOW); analogWrite(lms, s); }
+void leftMotorStop()         { digitalWrite(lmf, LOW); digitalWrite(lmb, LOW); analogWrite(lms, 0); }
+
+void rightMotorForward(int s){ digitalWrite(rmf, LOW); digitalWrite(rmb, HIGH); analogWrite(rms, s); }
+void rightMotorBackward(int s){ digitalWrite(rmf, HIGH); digitalWrite(rmb, LOW); analogWrite(rms, s); }
+void rightMotorStop()        { digitalWrite(rmf, LOW); digitalWrite(rmb, LOW); analogWrite(rms, 0); }
+
+void stopMotors() {
+  leftMotorStop();
+  rightMotorStop();
+}

@@ -1,0 +1,64 @@
+// ==========================================
+//    CALIBRATED COLOR SENSOR TEST
+// ==========================================
+
+// --- PIN MAPPING (ESP32 SAFE MODE) ---
+const int s2 = 4;
+const int s3 = 5;
+const int out = 18;
+
+// --- CALIBRATION THRESHOLDS ---
+// (Derived from your specific data)
+int NO_OBJECT_LIMIT = 250; 
+int BLUE_LIMIT = 60;      
+int RED_LIMIT = 65;       
+int GREEN_LIMIT = 85;     
+
+void setup() {
+  pinMode(s2, OUTPUT);
+  pinMode(s3, OUTPUT);
+  pinMode(out, INPUT);
+  
+  Serial.begin(115200);
+  Serial.println("--- Color Sensor Ready ---");
+}
+
+void loop() {
+  // 1. Read Raw Values
+  digitalWrite(s2, LOW); digitalWrite(s3, LOW);
+  int r = pulseIn(out, LOW, 30000);
+  delay(10);
+
+  digitalWrite(s2, HIGH); digitalWrite(s3, HIGH);
+  int g = pulseIn(out, LOW, 30000);
+  delay(10);
+
+  digitalWrite(s2, LOW); digitalWrite(s3, HIGH);
+  int b = pulseIn(out, LOW, 30000);
+  delay(10);
+
+  // 2. Print Raw Values (For Debugging)
+  Serial.print("R:"); Serial.print(r);
+  Serial.print(" G:"); Serial.print(g);
+  Serial.print(" B:"); Serial.print(b);
+  Serial.print(" -> ");
+
+  // 3. Logic Decision
+  if (r > NO_OBJECT_LIMIT || g > NO_OBJECT_LIMIT || b > NO_OBJECT_LIMIT) {
+    Serial.println("NO OBJECT (Air)");
+  }
+  else if (b < BLUE_LIMIT && b < r && b < g) {
+    Serial.println("BLUE");
+  }
+  else if (r < RED_LIMIT && r < g && r < b) {
+    Serial.println("RED");
+  }
+  else if (g < GREEN_LIMIT && g < r && g < b) {
+    Serial.println("GREEN");
+  }
+  else {
+    Serial.println("Unknown Color");
+  }
+
+  delay(500);
+}
